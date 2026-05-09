@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0e2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a1f4e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e3a8a;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#2563eb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="shieldInner" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e40af;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#60a5fa;stop-opacity:0.4" />
+      <stop offset="100%" style="stop-color:#2563eb;stop-opacity:0" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="softGlow">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="256" fill="url(#bgGrad)"/>
+
+  <!-- Outer glow ring -->
+  <circle cx="256" cy="256" r="220" fill="none" stroke="#2563eb" stroke-width="1.5" opacity="0.3"/>
+  <circle cx="256" cy="256" r="200" fill="none" stroke="#3b82f6" stroke-width="0.8" opacity="0.2"/>
+
+  <!-- Shield shape -->
+  <path d="M256 80 L370 130 L370 240 C370 310 320 370 256 400 C192 370 142 310 142 240 L142 130 Z"
+        fill="url(#shieldGrad)" filter="url(#softGlow)"/>
+
+  <!-- Shield inner highlight -->
+  <path d="M256 95 L355 140 L355 240 C355 302 310 357 256 384 C202 357 157 302 157 240 L157 140 Z"
+        fill="url(#shieldInner)" opacity="0.6"/>
+
+  <!-- Shield top shine -->
+  <path d="M256 95 L355 140 L355 175 C320 160 280 152 256 150 C232 152 192 160 157 175 L157 140 Z"
+        fill="url(#glowGrad)" opacity="0.5"/>
+
+  <!-- Shield border -->
+  <path d="M256 80 L370 130 L370 240 C370 310 320 370 256 400 C192 370 142 310 142 240 L142 130 Z"
+        fill="none" stroke="#60a5fa" stroke-width="2.5" opacity="0.7"/>
+
+  <!-- Lock body -->
+  <rect x="220" y="240" width="72" height="58" rx="8" fill="white" opacity="0.95"/>
+
+  <!-- Lock shackle -->
+  <path d="M232 240 L232 218 C232 196 280 196 280 218 L280 240"
+        fill="none" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.95"/>
+
+  <!-- Lock keyhole -->
+  <circle cx="256" cy="264" r="9" fill="#1e3a8a"/>
+  <rect x="252" y="264" width="8" height="14" rx="2" fill="#1e3a8a"/>
+
+  <!-- Signal arcs around shield -->
+  <path d="M110 200 C90 230 90 270 110 300" fill="none" stroke="#60a5fa" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+  <path d="M88 180 C60 218 60 280 88 318" fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+
+  <path d="M402 200 C422 230 422 270 402 300" fill="none" stroke="#60a5fa" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+  <path d="M424 180 C452 218 452 280 424 318" fill="none" stroke="#3b82f6" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+
+  <!-- Bottom text: ShieldVPN -->
+  <text x="256" y="455" text-anchor="middle" font-family="'Arial Black', sans-serif" font-size="38" font-weight="900" letter-spacing="2" fill="white" opacity="0.95">Shield</text>
+  <text x="256" y="490" text-anchor="middle" font-family="'Arial Black', sans-serif" font-size="26" font-weight="700" letter-spacing="4" fill="#60a5fa">VPN</text>
+</svg>
