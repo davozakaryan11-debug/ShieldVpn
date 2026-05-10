@@ -39,8 +39,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
-  // VPN state
-  V2RayStatus _vpnStatus = V2RayStatus.disconnected;
+  // VPN state — используем String вместо enum V2RayStatus
+  String _vpnStatus = 'disconnected';
   String _selectedServer = 'Авто-оптимальный';
   String _subscriptionUrl = '';
   int _currentIndex = 0;
@@ -65,16 +65,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     {'name': 'Sweden LTE', 'flag': '🇸🇪', 'ping': '55ms'},
   ];
 
-  bool get _isConnected => _vpnStatus == V2RayStatus.connected;
-  bool get _isConnecting => _vpnStatus == V2RayStatus.connecting;
+  bool get _isConnected => _vpnStatus == 'connected';
+  bool get _isConnecting => _vpnStatus == 'connecting';
 
   String get _statusText {
     switch (_vpnStatus) {
-      case V2RayStatus.connected:
+      case 'connected':
         return 'Подключено · $_selectedServer';
-      case V2RayStatus.connecting:
+      case 'connecting':
         return 'Подключение...';
-      case V2RayStatus.disconnecting:
+      case 'disconnecting':
         return 'Отключение...';
       default:
         return 'Не подключено';
@@ -100,7 +100,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _initV2Ray() {
     _flutterV2ray = FlutterV2ray(
       onStatusChanged: (status) {
-        setState(() => _vpnStatus = status.state);
+        setState(() => _vpnStatus = status.state.toString());
       },
     );
     _flutterV2ray.initializeV2Ray(
@@ -230,7 +230,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Future<void> _toggleConnection() async {
-    if (_isConnected || _vpnStatus == V2RayStatus.connecting) {
+    if (_isConnected || _vpnStatus == 'connecting') {
       await _flutterV2ray.stopV2Ray();
       return;
     }
@@ -564,6 +564,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
             ),
           ),
+
           const SizedBox(height: 40),
         ],
       ),
@@ -591,7 +592,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // ─── SERVERS PAGE ─────────────────────────────────────────────────────────
 
   Widget _buildServersPage() {
-    // Если есть конфиги из подписки — показываем их, иначе статичный список
     final hasParsed = _parsedConfigs.isNotEmpty;
 
     return ListView(
