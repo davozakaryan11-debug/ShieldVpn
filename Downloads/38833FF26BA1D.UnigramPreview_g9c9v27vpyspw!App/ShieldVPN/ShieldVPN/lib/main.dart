@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_v2ray/flutter_v2ray.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -38,17 +39,23 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
-  bool _isConnected = false;
-  bool _isConnecting = false;
+  // VPN state
+  V2RayStatus _vpnStatus = V2RayStatus.disconnected;
   String _selectedServer = 'Авто-оптимальный';
-  String _status = 'Не подключено';
   String _subscriptionUrl = '';
   int _currentIndex = 0;
+  List<Map<String, dynamic>> _parsedConfigs = [];
+  Map<String, dynamic>? _activeConfig;
+  String _uploadSpeed = '0 KB/s';
+  String _downloadSpeed = '0 KB/s';
+
+  late FlutterV2ray _flutterV2ray;
 
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
-  final List<Map<String, String>> _servers = [
+  // Статичные серверы — используются если нет подписки
+  final List<Map<String, String>> _staticServers = [
     {'name': 'Авто-оптимальный', 'flag': '⚡', 'ping': 'авто'},
     {'name': 'Finland Helsinki', 'flag': '🇫🇮', 'ping': '32ms'},
     {'name': 'Germany Nürnberg', 'flag': '🇩🇪', 'ping': '45ms'},
@@ -58,9 +65,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     {'name': 'Sweden LTE', 'flag': '🇸🇪', 'ping': '55ms'},
   ];
 
+  bool get _isConnected => _vpnStatus == V2RayStatus.connected;
+  bool get _isConnecting => _vpnStatus == V2RayStatus.connecting;
+
+  String get _statusText {
+    switch (_vpnStatus) {
+      case V2RayStatus.connected:
+        return 'Подключено · $_selectedServer';
+      case V2RayStatus.connecting:
+        return 'Подключение...';
+      case V2RayStatus.disconnecting:
+        return 'Отключение...';
+      default:
+        return 'Не подключено';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+
     _pulseController = AnimationController(
       duration: const Duration(seconds: 2),
       vsync: this,
@@ -68,7 +92,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _pulseAnimation = Tween<double>(begin: 0.95, end: 1.05).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+
+    _initV2Ray();
     _loadSubscription();
+  }
+
+  void _initV2Ray() {
+    _flutterV2ray = FlutterV2ray(
+      onStatusChanged: (status) {
+        setState(() => _vpnStatus = status.state);
+      },
+    );
+    _flutterV2ray.initializeV2Ray(
+      notificationIconResourceType: "mipmap",
+      notificationIconResourceName: "ic_launcher",
+    );
   }
 
   @override
@@ -79,43 +117,189 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Future<void> _loadSubscription() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _subscriptionUrl = prefs.getString('sub_url') ?? '';
-    });
+    final url = prefs.getString('sub_url') ?? '';
+    setState(() => _subscriptionUrl = url);
+    if (url.isNotEmpty) {
+      await _fetchSubscription(url);
+    }
   }
 
   Future<void> _saveSubscription(String url) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('sub_url', url);
     setState(() => _subscriptionUrl = url);
+    await _fetchSubscription(url);
   }
 
-  void _toggleConnection() async {
-    if (_isConnected) {
-      setState(() {
-        _isConnected = false;
-        _status = 'Не подключено';
-      });
+  /// Скачивает subscription URL и парсит конфиги (base64 -> список ссылок)
+  Future<void> _fetchSubscription(String url) async {
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(
+        const Duration(seconds: 10),
+      );
+      if (response.statusCode != 200) return;
+
+      String body = response.body.trim();
+
+      // Subscription обычно приходит в base64
+      List<String> lines;
+      try {
+        final decoded = utf8.decode(base64.decode(body));
+        lines = decoded.split('\n').where((l) => l.trim().isNotEmpty).toList();
+      } catch (_) {
+        // Не base64 — просто список ссылок
+        lines = body.split('\n').where((l) => l.trim().isNotEmpty).toList();
+      }
+
+      final configs = <Map<String, dynamic>>[];
+      for (final line in lines) {
+        final parsed = _parseProxyLink(line.trim());
+        if (parsed != null) configs.add(parsed);
+      }
+
+      setState(() => _parsedConfigs = configs);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка загрузки подписки: $e'),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Парсит одну proxy-ссылку: vless://, vmess://, ss://
+  Map<String, dynamic>? _parseProxyLink(String link) {
+    if (link.startsWith('vmess://')) {
+      try {
+        final b64 = link.substring(8);
+        final json = utf8.decode(base64.decode(b64));
+        final map = jsonDecode(json) as Map<String, dynamic>;
+        return {
+          'protocol': 'vmess',
+          'name': map['ps'] ?? map['add'] ?? 'VMess',
+          'raw': link,
+          'address': map['add'],
+          'port': map['port'],
+        };
+      } catch (_) {
+        return null;
+      }
+    } else if (link.startsWith('vless://')) {
+      final name = _extractRemarkFromUri(link);
+      final uri = Uri.tryParse(link);
+      return {
+        'protocol': 'vless',
+        'name': name,
+        'raw': link,
+        'address': uri?.host,
+        'port': uri?.port,
+      };
+    } else if (link.startsWith('ss://')) {
+      final name = _extractRemarkFromUri(link);
+      return {
+        'protocol': 'ss',
+        'name': name,
+        'raw': link,
+      };
+    } else if (link.startsWith('trojan://')) {
+      final name = _extractRemarkFromUri(link);
+      final uri = Uri.tryParse(link);
+      return {
+        'protocol': 'trojan',
+        'name': name,
+        'raw': link,
+        'address': uri?.host,
+        'port': uri?.port,
+      };
+    }
+    return null;
+  }
+
+  String _extractRemarkFromUri(String link) {
+    try {
+      final uri = Uri.parse(link);
+      final frag = uri.fragment;
+      if (frag.isNotEmpty) return Uri.decodeComponent(frag);
+      return uri.host;
+    } catch (_) {
+      return link.substring(0, 20);
+    }
+  }
+
+  Future<void> _toggleConnection() async {
+    if (_isConnected || _vpnStatus == V2RayStatus.connecting) {
+      await _flutterV2ray.stopV2Ray();
       return;
     }
 
+    // Нет подписки — просим добавить
     if (_subscriptionUrl.isEmpty) {
       _showAddSubscription();
       return;
     }
 
-    setState(() {
-      _isConnecting = true;
-      _status = 'Подключение...';
-    });
+    // Нет распарсенных конфигов — пробуем загрузить снова
+    if (_parsedConfigs.isEmpty) {
+      await _fetchSubscription(_subscriptionUrl);
+      if (_parsedConfigs.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Не удалось загрузить конфиги. Проверь ссылку подписки.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+    }
 
-    await Future.delayed(const Duration(seconds: 2));
+    // Выбираем конфиг: либо активный, либо первый
+    final config = _activeConfig ?? _parsedConfigs.first;
+    final raw = config['raw'] as String;
+
+    // Запрашиваем разрешение VPN (Android VpnService)
+    final permission = await _flutterV2ray.requestPermission();
+    if (!permission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Необходимо разрешение VPN'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    final v2rayURL = FlutterV2ray.parseFromURL(raw);
+
+    await _flutterV2ray.startV2Ray(
+      remark: config['name'] ?? 'ShieldVPN',
+      config: v2rayURL.getFullConfiguration(),
+      blockedApps: null,
+      bypassSubnets: null,
+      proxyOnly: false,
+    );
 
     setState(() {
-      _isConnecting = false;
-      _isConnected = true;
-      _status = 'Подключено · $_selectedServer';
+      _selectedServer = config['name'] ?? 'ShieldVPN';
     });
+  }
+
+  void _selectConfig(Map<String, dynamic> config) {
+    setState(() {
+      _activeConfig = config;
+      _selectedServer = config['name'] ?? 'Неизвестно';
+      _currentIndex = 0;
+    });
+    // Если уже подключены — переподключаемся
+    if (_isConnected) {
+      _flutterV2ray.stopV2Ray().then((_) => _toggleConnection());
+    }
   }
 
   void _showAddSubscription() {
@@ -173,15 +357,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-                onPressed: () {
-                  _saveSubscription(controller.text.trim());
+                onPressed: () async {
+                  final url = controller.text.trim();
                   Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('✅ Конфиг добавлен!'),
-                      backgroundColor: Color(0xFF16a34a)),
-                  );
+                  await _saveSubscription(url);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(_parsedConfigs.isEmpty
+                          ? '⚠️ Подписка сохранена, но конфиги не загружены'
+                          : '✅ Загружено конфигов: ${_parsedConfigs.length}'),
+                        backgroundColor: _parsedConfigs.isEmpty
+                          ? Colors.orange.shade700
+                          : const Color(0xFF16a34a),
+                      ),
+                    );
+                  }
                 },
-                child: const Text('Сохранить', style: TextStyle(
+                child: const Text('Сохранить и загрузить', style: TextStyle(
                   color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold,
                 )),
               ),
@@ -210,12 +403,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  // ─── HOME PAGE ────────────────────────────────────────────────────────────
+
   Widget _buildHomePage() {
     return SingleChildScrollView(
       child: Column(
         children: [
           const SizedBox(height: 40),
-          // Logo & Title
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -265,22 +459,32 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
                 child: _isConnecting
                   ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 3)
-                  : Icon(
-                      _isConnected ? Icons.power_settings_new : Icons.power_settings_new,
-                      color: Colors.white, size: 80,
-                    ),
+                  : const Icon(Icons.power_settings_new, color: Colors.white, size: 80),
               ),
             ),
           ),
 
           const SizedBox(height: 24),
-          Text(_status, style: TextStyle(
+          Text(_statusText, style: TextStyle(
             color: _isConnected ? const Color(0xFF4ade80) : const Color(0xFF94a3b8),
             fontSize: 16, fontWeight: FontWeight.w600,
           )),
           const SizedBox(height: 8),
           Text(_isConnected ? 'Нажми чтобы отключить' : 'Нажми чтобы подключить',
             style: const TextStyle(color: Color(0xFF475569), fontSize: 13)),
+
+          // Трафик (только при подключении)
+          if (_isConnected) ...[
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _trafficChip(Icons.arrow_upward, _uploadSpeed, const Color(0xFF60a5fa)),
+                const SizedBox(width: 16),
+                _trafficChip(Icons.arrow_downward, _downloadSpeed, const Color(0xFF4ade80)),
+              ],
+            ),
+          ],
 
           const SizedBox(height: 40),
 
@@ -340,9 +544,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         const Text('Конфигурация', style: TextStyle(
                           color: Color(0xFF94a3b8), fontSize: 12)),
                         Text(
-                          _subscriptionUrl.isEmpty ? 'Добавить ссылку подписки' : 'Подписка активна ✅',
+                          _subscriptionUrl.isEmpty
+                            ? 'Добавить ссылку подписки'
+                            : _parsedConfigs.isEmpty
+                              ? 'Загрузка конфигов...'
+                              : 'Загружено серверов: ${_parsedConfigs.length} ✅',
                           style: TextStyle(
-                            color: _subscriptionUrl.isEmpty ? const Color(0xFF60a5fa) : const Color(0xFF4ade80),
+                            color: _subscriptionUrl.isEmpty
+                              ? const Color(0xFF60a5fa)
+                              : const Color(0xFF4ade80),
                             fontSize: 15, fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -360,62 +570,149 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _trafficChip(IconData icon, String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111536),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF1e3a8a)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 14),
+          const SizedBox(width: 6),
+          Text(text, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  // ─── SERVERS PAGE ─────────────────────────────────────────────────────────
+
   Widget _buildServersPage() {
+    // Если есть конфиги из подписки — показываем их, иначе статичный список
+    final hasParsed = _parsedConfigs.isNotEmpty;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         const SizedBox(height: 16),
         const Text('Выбор сервера', style: TextStyle(
           color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        if (hasParsed)
+          Text('Серверов из подписки: ${_parsedConfigs.length}',
+            style: const TextStyle(color: Color(0xFF64748b), fontSize: 13))
+        else
+          const Text('Добавь подписку для загрузки реальных серверов',
+            style: TextStyle(color: Color(0xFF64748b), fontSize: 13)),
         const SizedBox(height: 16),
-        ..._servers.map((server) => GestureDetector(
-          onTap: () {
-            setState(() {
-              _selectedServer = server['name']!;
-              _currentIndex = 0;
-            });
-          },
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 10),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: _selectedServer == server['name']
-                ? const Color(0xFF1e3a8a)
-                : const Color(0xFF111536),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
+
+        if (hasParsed)
+          ..._parsedConfigs.map((config) {
+            final name = config['name'] as String? ?? 'Сервер';
+            final protocol = config['protocol'] as String? ?? '';
+            final isSelected = _activeConfig == config ||
+              (_activeConfig == null && config == _parsedConfigs.first && _selectedServer == name);
+            return GestureDetector(
+              onTap: () => _selectConfig(config),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: isSelected ? const Color(0xFF1e3a8a) : const Color(0xFF111536),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: isSelected ? const Color(0xFF2563eb) : const Color(0xFF1e2451),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    _protocolIcon(protocol),
+                    const SizedBox(width: 14),
+                    Expanded(child: Text(name, style: const TextStyle(
+                      color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600))),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0a0e2e),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(protocol.toUpperCase(), style: const TextStyle(
+                        color: Color(0xFF60a5fa), fontSize: 11)),
+                    ),
+                    if (isSelected)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: Icon(Icons.check_circle, color: Color(0xFF2563eb), size: 20),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          })
+        else
+          ..._staticServers.map((server) => GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedServer = server['name']!;
+                _currentIndex = 0;
+              });
+            },
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
                 color: _selectedServer == server['name']
-                  ? const Color(0xFF2563eb)
-                  : const Color(0xFF1e2451),
+                  ? const Color(0xFF1e3a8a)
+                  : const Color(0xFF111536),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: _selectedServer == server['name']
+                    ? const Color(0xFF2563eb)
+                    : const Color(0xFF1e2451),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Text(server['flag']!, style: const TextStyle(fontSize: 28)),
+                  const SizedBox(width: 14),
+                  Expanded(child: Text(server['name']!, style: const TextStyle(
+                    color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600))),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0a0e2e),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(server['ping']!, style: const TextStyle(
+                      color: Color(0xFF60a5fa), fontSize: 12)),
+                  ),
+                  if (_selectedServer == server['name'])
+                    const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Icon(Icons.check_circle, color: Color(0xFF2563eb), size: 20),
+                    ),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Text(server['flag']!, style: const TextStyle(fontSize: 28)),
-                const SizedBox(width: 14),
-                Expanded(child: Text(server['name']!, style: const TextStyle(
-                  color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600))),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0a0e2e),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(server['ping']!, style: const TextStyle(
-                    color: Color(0xFF60a5fa), fontSize: 12)),
-                ),
-                if (_selectedServer == server['name'])
-                  const Padding(
-                    padding: EdgeInsets.only(left: 8),
-                    child: Icon(Icons.check_circle, color: Color(0xFF2563eb), size: 20),
-                  ),
-              ],
-            ),
-          ),
-        )),
+          )),
       ],
     );
   }
+
+  Widget _protocolIcon(String protocol) {
+    final icons = {
+      'vless': '🔷',
+      'vmess': '🔶',
+      'ss': '🟣',
+      'trojan': '🟠',
+    };
+    return Text(icons[protocol] ?? '🌐', style: const TextStyle(fontSize: 24));
+  }
+
+  // ─── BOT PAGE ─────────────────────────────────────────────────────────────
 
   Widget _buildBotPage() {
     return Center(
